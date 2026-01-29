@@ -1,5 +1,5 @@
 
-# HOW-TO: RTX5070 (Windows) で mamba-ssm を CUDA 付きで使って JSAI_PPG を動かす
+# HOW-TO: RTX5070 (Windows) で mamba-ssm を CUDA 付きで動かす
 
 ## 1. 結局なにが問題だった？（原因の整理）
 
