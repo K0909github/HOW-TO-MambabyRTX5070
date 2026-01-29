@@ -1,0 +1,114 @@
+
+# HOW-TO: RTX5070 (Windows) で mamba-ssm を CUDA 付きで使って JSAI_PPG を動かす
+
+## 1. 結局なにが問題だった？（原因の整理）
+
+今回詰まった点は、大きく分けて「配布物が無いのでソースビルドが必要」＋「Windows/CUDA/MSVC 特有のコンパイル問題」でした。
+
+### (A) そもそも wheel が無い/合わない
+
+- `mamba-ssm` は環境（Python/torch/CUDA/Windows）によっては PyPI に対応 wheel が無く、結果として **CUDA 拡張をソースからビルド**する必要がありました。
+- その状態で PEP517 build isolation のままインストールすると、torch / nvcc の検出が崩れて失敗しやすいです（torch が入ってない“隔離環境”でビルドが走るため）。
+
+### (B) torch の CUDA と CUDA Toolkit のミスマッチ
+
+- 途中で torch を安定版へ揃え、最終的に `torch==2.4.1+cu124`（CUDA 12.4 向け）に固定しました。
+- しかしマシン側に入っている CUDA Toolkit が 12.8 など別バージョンだと、拡張ビルド時の組み合わせでエラーが出やすいので、**拡張ビルド時は CUDA 12.4 を使う**方針に統一しました。
+
+### (C) selective_scan の CUDA/ヘッダが Windows (MSVC) で落ちる
+
+ビルドを止めていた“本丸”は、mamba の selective_scan 拡張側の Windows 特有エラーでした。
+
+- 型未定義: `SSMParamsBwd` を使う前に定義が見えていない（include 順序の問題）
+- 再定義: `selective_scan_bwd_launch` が同一ヘッダ内で二重定義
+- テンプレート不整合: 明示インスタンス化と宣言のテンプレート引数が一致していない
+- MSVC 内部コンパイラエラー (C1001): 入れ子 lambda + テンプレート dispatch で MSVC が ICE を起こす
+
+## 2. どうやって解決した？（何を変えた？）
+
+ソースビルドを通すために、vendor の mamba ソースを Windows 向けに最小限パッチしました。
+
+- include 順を修正して `SSMParamsBwd` を見えるようにした
+	- 対象: [vendor/mamba_src/csrc/selective_scan/selective_scan_bwd_kernel.cuh](vendor/mamba_src/csrc/selective_scan/selective_scan_bwd_kernel.cuh)
+- ヘッダ内の二重定義を解消
+	- 対象: [vendor/mamba_src/csrc/selective_scan/selective_scan_bwd_kernel.cuh](vendor/mamba_src/csrc/selective_scan/selective_scan_bwd_kernel.cuh)
+- `selective_scan_bwd_cuda` のテンプレート宣言を、実際の明示インスタンス化に合わせて修正
+	- 対象: [vendor/mamba_src/csrc/selective_scan/selective_scan_bwd_kernel.cuh](vendor/mamba_src/csrc/selective_scan/selective_scan_bwd_kernel.cuh)
+- MSVC ICE 回避: fwd/bwd の入れ子 lambda dispatch を `switch` ベースの dispatch に置換
+	- 対象: [vendor/mamba_src/csrc/selective_scan/selective_scan_fwd_kernel.cuh](vendor/mamba_src/csrc/selective_scan/selective_scan_fwd_kernel.cuh)
+	- 対象: [vendor/mamba_src/csrc/selective_scan/selective_scan_bwd_kernel.cuh](vendor/mamba_src/csrc/selective_scan/selective_scan_bwd_kernel.cuh)
+
+結果として、`mamba_ssm-2.2.4` の wheel をローカルでビルドでき、`pip install` が成功しました。
+
+## 3. RTX5070 で動かすための手順（再現手順）
+
+前提: Windows 11 + NVIDIA Driver は導入済み。
+
+### 3.1 必須インストール
+
+1) Visual Studio 2022 Build Tools
+- 「Desktop development with C++」
+- MSVC v143
+- Windows 10/11 SDK
+
+2) CUDA Toolkit 12.4
+- torch を `+cu124` にしているので、拡張ビルドは CUDA 12.4 のツールチェーンで揃える
+
+3) Python 3.11（このプロジェクトは cp311 前提で進めた）
+
+### 3.2 venv 作成と依存導入
+
+JSAI_PPG のルート（`C:\JSAI_PPG`）で:
+
+- venv 作成
+	- `py -3.11 -m venv .venv`
+- pip 更新
+	- `.venv\Scripts\python.exe -m pip install -U pip setuptools wheel`
+- 依存導入（torch は cu124 を使う）
+	- `.venv\Scripts\python.exe -m pip install -r requirements.txt`
+
+※ [requirements.txt](requirements.txt) は `torch==2.4.1+cu124` を使う前提にしてあります。
+
+### 3.3 RTX5070 の compute capability を確認（推奨）
+
+ビルド時のアーキ指定を安定させるため、先に device capability を見ます:
+
+- `.venv\Scripts\python.exe -c "import torch; print(torch.cuda.get_device_name(0)); print(torch.cuda.get_device_capability(0))"`
+
+ここで出た `(major, minor)` に合わせて `TORCH_CUDA_ARCH_LIST` を設定すると、無駄なアーキ向けコンパイルを避けられます。
+
+例（※数値は例。実際は上の出力に合わせる）:
+- `set TORCH_CUDA_ARCH_LIST=9.0`
+
+### 3.4 mamba-ssm (v2.2.4) を CUDA 付きでビルドしてインストール
+
+重要: **VS 2022 の Developer Command Prompt / Developer PowerShell** から実行してください（`cl.exe` が PATH に乗っている状態）。
+
+1) mamba ソースへ移動
+- `cd C:\JSAI_PPG\vendor\mamba_src`
+
+2) （任意）ビルドキャッシュ掃除（失敗した後のやり直し時）
+- `if (Test-Path build) { Remove-Item build -Recurse -Force }`
+- `if (Test-Path dist) { Remove-Item dist -Recurse -Force }`
+- `Get-ChildItem -Filter "*.egg-info" | Remove-Item -Recurse -Force`
+
+3) build isolation を切ってインストール（torch を見せる）
+- `C:\JSAI_PPG\.venv\Scripts\python.exe -m pip install -v --no-build-isolation --no-deps .`
+
+これで `mamba_ssm` が入り、CUDA 拡張もビルドされます。
+
+### 3.5 動作確認
+
+JSAI_PPG ルートに戻って:
+
+- `cd C:\JSAI_PPG`
+- `.venv\Scripts\python.exe -c "import torch; import mamba_ssm; print('torch', torch.__version__); print('cuda', torch.version.cuda); print('mamba_ssm', mamba_ssm.__version__)"`
+
+この時点で import が通れば、少なくともビルド・DLL ロードは成功です。
+
+## 4. よくある詰まりポイント（再発時の見方）
+
+- `cl.exe not found` / `nvcc fatal` 系: VS Developer 環境で実行しているか、CUDA 12.4 を使っているかを確認
+- `C1001 (clambdas.cpp)` が出たら: MSVC の内部エラーなので、入れ子 lambda dispatch を避ける必要があります（今回のパッチがそれ）
+- torch の CUDA が `12.4` 以外になっていたら: `pip show torch` と `python -c "import torch; print(torch.__version__, torch.version.cuda)"` で確認
+
