@@ -1,5 +1,5 @@
 
-# HOW-TO: RTX5070 (Windows) で mamba-ssm を CUDA 付きで使って JSAI_PPG を動かす
+# HOW-TO: RTX5070 (Windows) で mamba-ssm を CUDA 付きで使う（汎用手順）
 
 ## 1. 結局なにが問題だった？（原因の整理）
 
@@ -12,8 +12,8 @@
 
 ### (B) torch の CUDA と CUDA Toolkit のミスマッチ
 
-- 途中で torch を安定版へ揃え、最終的に `torch==2.4.1+cu124`（CUDA 12.4 向け）に固定しました。
-- しかしマシン側に入っている CUDA Toolkit が 12.8 など別バージョンだと、拡張ビルド時の組み合わせでエラーが出やすいので、**拡張ビルド時は CUDA 12.4 を使う**方針に統一しました。
+- （当時のメモ）途中で torch を安定版へ揃え、`torch==2.4.1+cu124`（CUDA 12.4 向け）に固定していた時期がありました。
+- ただし RTX5070（sm_120）ではこの組み合わせだと実行時にアーキ不足で落ちるため、最終的には **CUDA 12.8 対応の torch（cu128）へ移行**しています（追記参照）。
 
 ### (C) selective_scan の CUDA/ヘッダが Windows (MSVC) で落ちる
 
@@ -40,9 +40,11 @@
 
 結果として、`mamba_ssm-2.2.4` の wheel をローカルでビルドでき、`pip install` が成功しました。
 
-## 3. RTX5070 で動かすための手順（再現手順）
+## 3. RTX5070 (Windows) で mamba-ssm を CUDA 付きで使う手順（汎用）
 
 前提: Windows 11 + NVIDIA Driver は導入済み。
+
+この章は「このリポジトリに依存しない」形で、別プロジェクトでも再利用できるように書いています。
 
 ### 3.1 必須インストール
 
@@ -51,64 +53,107 @@
 - MSVC v143
 - Windows 10/11 SDK
 
-2) CUDA Toolkit 12.4
-- torch を `+cu124` にしているので、拡張ビルドは CUDA 12.4 のツールチェーンで揃える
+2) CUDA Toolkit 12.8
+- RTX5070 は `sm_120` のため、拡張ビルドは 12.8+ を前提にした方が安全です
 
-3) Python 3.11（このプロジェクトは cp311 前提で進めた）
+3) Python 3.11
+- Windows + CUDA 拡張の組み合わせは、まずは cp311（3.11）で揃えるのが無難
 
-### 3.2 venv 作成と依存導入
+### 3.2 仮想環境を作る
 
-JSAI_PPG のルート（`C:\JSAI_PPG`）で:
+任意の作業ディレクトリで:
 
-- venv 作成
-	- `py -3.11 -m venv .venv`
-- pip 更新
-	- `.venv\Scripts\python.exe -m pip install -U pip setuptools wheel`
-- 依存導入（torch は cu124 を使う）
-	- `.venv\Scripts\python.exe -m pip install -r requirements.txt`
+- `py -3.11 -m venv .venv`
+- `.venv\Scripts\python.exe -m pip install -U pip setuptools wheel`
 
-※ [requirements.txt](requirements.txt) は `torch==2.4.1+cu124` を使う前提にしてあります。
+### 3.3 torch を “sm_120 対応の CUDA 版” で入れる
 
-### 3.3 RTX5070 の compute capability を確認（推奨）
+ここが最初の関門です。
 
-ビルド時のアーキ指定を安定させるため、先に device capability を見ます:
+- RTX5070 の compute capability は `(12, 0)` = `sm_120`
+- **torch 自体が sm_120 を実行できるビルド**でないと、実行時に `no kernel image is available for execution on the device` になり得ます
 
-- `.venv\Scripts\python.exe -c "import torch; print(torch.cuda.get_device_name(0)); print(torch.cuda.get_device_capability(0))"`
+方針:
+- CUDA 12.8 対応の torch（cu128 系。nightly/dev を含む）へ切り替える
+- 具体的なインストールコマンドは環境で変わるため、PyTorch 公式の手順に従う（重要なのは「cu128 で sm_120 が動くこと」）
 
-ここで出た `(major, minor)` に合わせて `TORCH_CUDA_ARCH_LIST` を設定すると、無駄なアーキ向けコンパイルを避けられます。
+確認:
+- `.venv\Scripts\python.exe -c "import torch; print(torch.__version__); print('cuda', torch.version.cuda); print('cap', torch.cuda.get_device_capability(0))"`
 
-例（※数値は例。実際は上の出力に合わせる）:
-- `set TORCH_CUDA_ARCH_LIST=9.0`
-
-### 3.4 mamba-ssm (v2.2.4) を CUDA 付きでビルドしてインストール
+### 3.4 mamba-ssm を CUDA 拡張込みで入れる
 
 重要: **VS 2022 の Developer Command Prompt / Developer PowerShell** から実行してください（`cl.exe` が PATH に乗っている状態）。
 
-1) mamba ソースへ移動
-- `cd C:\JSAI_PPG\vendor\mamba_src`
+まずは以下のどちらかでソースを用意します。
 
-2) （任意）ビルドキャッシュ掃除（失敗した後のやり直し時）
-- `if (Test-Path build) { Remove-Item build -Recurse -Force }`
-- `if (Test-Path dist) { Remove-Item dist -Recurse -Force }`
-- `Get-ChildItem -Filter "*.egg-info" | Remove-Item -Recurse -Force`
+- A) `pip` でソースを取ってくる（例: `pip download --no-binary :all: mamba-ssm==2.2.4`）
+- B) GitHub からソースを取得する（タグ/リリースを推奨）
+- C) 既存プロジェクトに vendor 済みのソースを使う（このリポジトリのような形）
 
-3) build isolation を切ってインストール（torch を見せる）
-- `C:\JSAI_PPG\.venv\Scripts\python.exe -m pip install -v --no-build-isolation --no-deps .`
+そのうえで、ソースディレクトリで:
 
-これで `mamba_ssm` が入り、CUDA 拡張もビルドされます。
+- `python -m pip install -v --no-build-isolation --no-deps .`
 
-### 3.5 動作確認
+ポイント:
+- `--no-build-isolation` は torch/nvcc 検出を安定させるため
 
-JSAI_PPG ルートに戻って:
+### 3.5 RTX5070 (sm_120) で“実行まで”通すための追加条件
 
-- `cd C:\JSAI_PPG`
-- `.venv\Scripts\python.exe -c "import torch; import mamba_ssm; print('torch', torch.__version__); print('cuda', torch.version.cuda); print('mamba_ssm', mamba_ssm.__version__)"`
+**import が通っても、GPU カーネルが実行できるとは限りません**。
 
-この時点で import が通れば、少なくともビルド・DLL ロードは成功です。
+#### (1) mamba の CUDA 拡張（selective_scan_cuda）も `sm_120` でビルドする
 
-## 4. よくある詰まりポイント（再発時の見方）
+torch が sm_120 対応でも、mamba の CUDA 拡張が `sm_120` を含んでいないと実行時に同様に落ちます。
 
-- `cl.exe not found` / `nvcc fatal` 系: VS Developer 環境で実行しているか、CUDA 12.4 を使っているかを確認
-- `C1001 (clambdas.cpp)` が出たら: MSVC の内部エラーなので、入れ子 lambda dispatch を避ける必要があります（今回のパッチがそれ）
-- torch の CUDA が `12.4` 以外になっていたら: `pip show torch` と `python -c "import torch; print(torch.__version__, torch.version.cuda)"` で確認
+対策:
+- セットアップ側に `-gencode arch=compute_120,code=sm_120`（＋必要なら PTX）を入れてビルドし直す
+
+このリポジトリで該当する場所: [vendor/mamba_src/setup.py](vendor/mamba_src/setup.py)
+
+#### (2) 複数 CUDA が入っている場合は 12.8 を踏ませる
+
+PowerShell 例:
+
+- `$env:CUDA_HOME="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"; $env:PATH="$env:CUDA_HOME\bin;" + $env:PATH`
+
+### 3.6 最小の動作確認（汎用）
+
+以下は「別プロジェクトでもそのまま使える」最小確認です（学習コードは不要）。
+
+1) import + バージョン
+
+- `.venv\Scripts\python.exe -c "import torch, mamba_ssm; print('torch', torch.__version__); print('cuda', torch.version.cuda); print('cap', torch.cuda.get_device_capability(0)); print('mamba_ssm', mamba_ssm.__version__)"`
+
+2) GPU forward が回ること（`no kernel image` が出ないこと）
+
+PowerShell 例（そのまま貼り付けて実行）:
+
+- `@'
+import torch
+from mamba_ssm import Mamba
+
+assert torch.cuda.is_available()
+print('cap', torch.cuda.get_device_capability(0))
+
+m = Mamba(d_model=64, d_state=16, d_conv=4, expand=2).cuda().half()
+x = torch.randn(2, 128, 64, device='cuda', dtype=torch.float16)  # (B, L, D)
+y = m(x)
+print('ok', y.shape, y.dtype, y.mean().item())
+'@ | .\.venv\Scripts\python.exe`
+
+## 4. 今回（このリポジトリで）参考になる “mamba 側の変更箇所”
+
+他プロジェクトで同じ問題に当たったときの「差分の当てどころ」です。
+
+- sm_120 用の gencode 追加（RTX5070 実行に必須）: [vendor/mamba_src/setup.py](vendor/mamba_src/setup.py)
+- MSVC で落ちる selective_scan の修正（ビルドを通すため）:
+  - [vendor/mamba_src/csrc/selective_scan/selective_scan_fwd_kernel.cuh](vendor/mamba_src/csrc/selective_scan/selective_scan_fwd_kernel.cuh)
+  - [vendor/mamba_src/csrc/selective_scan/selective_scan_bwd_kernel.cuh](vendor/mamba_src/csrc/selective_scan/selective_scan_bwd_kernel.cuh)
+
+## 5. よくある詰まりポイント（再発時の見方）
+
+- `cl.exe not found`: VS Developer 環境で実行しているか確認
+- `nvcc fatal` / CUDA バージョン混在: `CUDA_HOME` と `PATH` を見直して、意図した nvcc を踏ませる
+- `no kernel image is available for execution on the device`: torch が sm_120 対応か、拡張が sm_120 を含むか（setup の gencode を確認）
+- `PEP517`/build isolation で torch が見えない: `--no-build-isolation` で入れ直す
 
