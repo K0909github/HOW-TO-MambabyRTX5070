@@ -1,5 +1,5 @@
 
-# HOW-TO: RTX5070 (Windows) で mamba-ssm を CUDA 付きで動かす
+# HOW-TO: RTX5070 (Windows) で mamba-ssm を CUDA 付きで動かした記録
 
 ## 1. 結局なにが問題だった？（原因の整理）
 
@@ -58,7 +58,7 @@
 
 ### 3.2 venv 作成と依存導入
 
-JSAI_PPG のルート（`C:\JSAI_PPG`）で:
+project のルート（`C:\project`）で:
 
 - venv 作成
 	- `py -3.11 -m venv .venv`
@@ -85,7 +85,7 @@ JSAI_PPG のルート（`C:\JSAI_PPG`）で:
 重要: **VS 2022 の Developer Command Prompt / Developer PowerShell** から実行してください（`cl.exe` が PATH に乗っている状態）。
 
 1) mamba ソースへ移動
-- `cd C:\JSAI_PPG\vendor\mamba_src`
+- `cd C:\project\vendor\mamba_src`
 
 2) （任意）ビルドキャッシュ掃除（失敗した後のやり直し時）
 - `if (Test-Path build) { Remove-Item build -Recurse -Force }`
@@ -93,7 +93,7 @@ JSAI_PPG のルート（`C:\JSAI_PPG`）で:
 - `Get-ChildItem -Filter "*.egg-info" | Remove-Item -Recurse -Force`
 
 3) build isolation を切ってインストール（torch を見せる）
-- `C:\JSAI_PPG\.venv\Scripts\python.exe -m pip install -v --no-build-isolation --no-deps .`
+- `C:\project\.venv\Scripts\python.exe -m pip install -v --no-build-isolation --no-deps .`
 
 これで `mamba_ssm` が入り、CUDA 拡張もビルドされます。
 
@@ -101,7 +101,7 @@ JSAI_PPG のルート（`C:\JSAI_PPG`）で:
 
 JSAI_PPG ルートに戻って:
 
-- `cd C:\JSAI_PPG`
+- `cd C:\project`
 - `.venv\Scripts\python.exe -c "import torch; import mamba_ssm; print('torch', torch.__version__); print('cuda', torch.version.cuda); print('mamba_ssm', mamba_ssm.__version__)"`
 
 この時点で import が通れば、少なくともビルド・DLL ロードは成功です。
