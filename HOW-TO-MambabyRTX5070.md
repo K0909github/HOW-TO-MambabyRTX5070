@@ -99,7 +99,7 @@ project のルート（`C:\project`）で:
 
 ### 3.5 動作確認
 
-JSAI_PPG ルートに戻って:
+プロジェクトルートに戻って:
 
 - `cd C:\project`
 - `.venv\Scripts\python.exe -c "import torch; import mamba_ssm; print('torch', torch.__version__); print('cuda', torch.version.cuda); print('mamba_ssm', mamba_ssm.__version__)"`
