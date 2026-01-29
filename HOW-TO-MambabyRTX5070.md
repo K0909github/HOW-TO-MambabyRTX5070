@@ -61,7 +61,7 @@
 
 ### 3.2 仮想環境を作る
 
-任意の作業ディレクトリで:
+project のルート（例: `C:\project`）で:
 
 - `py -3.11 -m venv .venv`
 - `.venv\Scripts\python.exe -m pip install -U pip setuptools wheel`
@@ -84,18 +84,23 @@
 
 重要: **VS 2022 の Developer Command Prompt / Developer PowerShell** から実行してください（`cl.exe` が PATH に乗っている状態）。
 
-まずは以下のどちらかでソースを用意します。
+1) まずはソースを用意して、ソースディレクトリへ移動します（例: `C:\project\vendor\mamba_src`）。
 
 - A) `pip` でソースを取ってくる（例: `pip download --no-binary :all: mamba-ssm==2.2.4`）
 - B) GitHub からソースを取得する（タグ/リリースを推奨）
 - C) 既存プロジェクトに vendor 済みのソースを使う（このリポジトリのような形）
 
-そのうえで、ソースディレクトリで:
+2) build isolation を切ってインストール（torch を見せる）
 
 - `python -m pip install -v --no-build-isolation --no-deps .`
 
 ポイント:
 - `--no-build-isolation` は torch/nvcc 検出を安定させるため
+
+確認（import + 版表示）: プロジェクトルートに戻って
+
+- `cd C:\project`
+- `.venv\Scripts\python.exe -c "import torch; import mamba_ssm; print('torch', torch.__version__); print('cuda', torch.version.cuda); print('mamba_ssm', mamba_ssm.__version__)"`
 
 ### 3.5 RTX5070 (sm_120) で“実行まで”通すための追加条件
 
